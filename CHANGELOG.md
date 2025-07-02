@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.65.0](https://github.com/aquasecurity/trivy/compare/v0.64.0...v0.65.0) (2025-07-02)
+
+
+### Features
+
+* **license:** observe pkg types option in license scanner ([#9091](https://github.com/aquasecurity/trivy/issues/9091)) ([d44af8c](https://github.com/aquasecurity/trivy/commit/d44af8cfa21a145d14ca6e5e1ed4742d892f2dc5))
+
+
+### Bug Fixes
+
+* **sbom:** use correct field for licenses in CycloneDX reports ([#9057](https://github.com/aquasecurity/trivy/issues/9057)) ([143da88](https://github.com/aquasecurity/trivy/commit/143da88dd82dfbe204f4c2afe46af3b01701675d))
+* **secret:** fix line numbers for multiple-line secrets ([#9104](https://github.com/aquasecurity/trivy/issues/9104)) ([e579746](https://github.com/aquasecurity/trivy/commit/e57974649e4a3a275b9cf02db191b3f6bf10340f))
+
 ## [0.64.0](https://github.com/aquasecurity/trivy/compare/v0.63.0...v0.64.0) (2025-06-30)
 
 
