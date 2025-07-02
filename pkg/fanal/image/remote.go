@@ -9,21 +9,32 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
+	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/remote"
 )
 
 func tryRemote(ctx context.Context, imageName string, ref name.Reference, option types.ImageOptions) (types.Image, func(), error) {
+	log.Info("Attempting to fetch remote image", log.String("image", imageName), log.String("reference", ref.String()))
+
 	// This function doesn't need cleanup
 	cleanup := func() {}
 
 	desc, err := remote.Get(ctx, ref, option.RegistryOptions)
 	if err != nil {
+		log.Info("Failed to get remote image descriptor", log.String("image", imageName), log.String("reference", ref.String()), log.Err(err))
 		return nil, cleanup, err
 	}
+	log.Info("Successfully retrieved remote image descriptor", log.String("image", imageName), log.String("reference", ref.String()))
+
+	log.Info("Converting descriptor to image", log.String("image", imageName), log.String("reference", ref.String()), log.String("mediaType", string(desc.MediaType)), log.String("digest", desc.Digest.String()))
 	img, err := desc.Image()
 	if err != nil {
+		log.Info("Failed to get image from descriptor", log.String("image", imageName), log.String("reference", ref.String()), log.Err(err))
 		return nil, cleanup, err
 	}
+	log.Info("Successfully converted descriptor to image", log.String("image", imageName), log.String("reference", ref.String()))
+
+	log.Info("Successfully loaded remote image", log.String("image", imageName), log.String("reference", ref.String()))
 
 	// Return v1.Image if the image is found in Docker Registry
 	return remoteImage{

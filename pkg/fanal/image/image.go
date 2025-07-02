@@ -24,7 +24,10 @@ var imageSourceFuncs = map[types.ImageSource]imageSourceFunc{
 }
 
 func NewContainerImage(ctx context.Context, imageName string, opt types.ImageOptions) (types.Image, func(), error) {
+	log.Info("Creating new container image", log.String("image", imageName), log.Any("sources", opt.ImageSources))
+
 	if len(opt.ImageSources) == 0 {
+		log.Error("No image sources provided", log.String("image", imageName))
 		return nil, func() {}, xerrors.New("no image sources supplied")
 	}
 
@@ -32,29 +35,39 @@ func NewContainerImage(ctx context.Context, imageName string, opt types.ImageOpt
 	var nameOpts []name.Option
 	if opt.RegistryOptions.Insecure {
 		nameOpts = append(nameOpts, name.Insecure)
+		log.Info("Using insecure registry option", log.String("image", imageName))
 	}
 
+	log.Info("Parsing image reference", log.String("image", imageName))
 	ref, err := name.ParseReference(imageName, nameOpts...)
 	if err != nil {
+		log.Error("Failed to parse image name", log.String("image", imageName), log.Err(err))
 		return nil, func() {}, xerrors.Errorf("failed to parse the image name: %w", err)
 	}
+	log.Info("Successfully parsed image reference", log.String("image", imageName), log.String("reference", ref.String()))
 
 	for _, src := range opt.ImageSources {
+		log.Info("Trying image source", log.String("image", imageName), log.String("source", string(src)))
+
 		trySrc, ok := imageSourceFuncs[src]
 		if !ok {
-			log.Warn("Unknown image source", log.String("source", string(src)))
+			log.Warn("Unknown image source", log.String("image", imageName), log.String("source", string(src)))
 			continue
 		}
 
 		img, cleanup, err := trySrc(ctx, imageName, ref, opt)
 		if err == nil {
+			log.Info("Successfully loaded image", log.String("image", imageName), log.String("source", string(src)))
 			// Return v1.Image if the image is found
 			return img, cleanup, nil
 		}
+		log.Debug("Failed to load image from source", log.String("image", imageName), log.String("source", string(src)), log.Err(err))
+
 		err = multierror.Prefix(err, fmt.Sprintf("%s error:", src))
 		errs = multierror.Append(errs, err)
 	}
 
+	log.Error("Unable to find image in any source", log.String("image", imageName), log.Any("sources", opt.ImageSources), log.Err(errs))
 	return nil, func() {}, xerrors.Errorf("unable to find the specified image %q in %q: %w", imageName, opt.ImageSources, errs)
 }
 

@@ -29,14 +29,21 @@ type Descriptor = remote.Descriptor
 // Get is a wrapper of google/go-containerregistry/pkg/v1/remote.Get
 // so that it can try multiple authentication methods.
 func Get(ctx context.Context, ref name.Reference, option types.RegistryOptions) (*Descriptor, error) {
+	log.Info("Starting remote Get operation", log.String("ref", ref.String()))
+
 	tr, err := httpTransport(option)
 	if err != nil {
+		log.Error("Failed to create http transport", log.Err(err))
 		return nil, xerrors.Errorf("failed to create http transport: %w", err)
 	}
 
 	var errs error
+	authCount := 0
 	// Try each authentication method until it succeeds
 	for _, authOpt := range authOptions(ctx, ref, option) {
+		authCount++
+		log.Info("Attempting authentication", log.Int("attempt", authCount), log.String("ref", ref.String()))
+
 		remoteOpts := []remote.Option{
 			remote.WithTransport(tr),
 			authOpt,
@@ -45,29 +52,38 @@ func Get(ctx context.Context, ref name.Reference, option types.RegistryOptions) 
 		if option.Platform.Platform != nil {
 			p, err := resolvePlatform(ref, option.Platform, remoteOpts)
 			if err != nil {
+				log.Error("Platform resolution failed", log.Err(err), log.String("ref", ref.String()))
 				return nil, xerrors.Errorf("platform error: %w", err)
 			}
 			// Don't pass platform when the specified image is single-arch.
 			if p.Platform != nil {
 				remoteOpts = append(remoteOpts, remote.WithPlatform(*p.Platform))
+				log.Info("Using platform", log.String("platform", p.Platform.String()), log.String("ref", ref.String()))
 			}
 		}
 
 		desc, err := remote.Get(ref, remoteOpts...)
 		if err != nil {
+			log.Info("Authentication attempt failed", log.Int("attempt", authCount), log.Err(err), log.String("ref", ref.String()))
 			errs = multierror.Append(errs, err)
 			continue
 		}
 
+		log.Info("Authentication successful", log.Int("attempt", authCount), log.String("ref", ref.String()))
+
 		if option.Platform.Force {
 			if err = satisfyPlatform(desc, lo.FromPtr(option.Platform.Platform)); err != nil {
+				log.Error("Platform satisfaction check failed", log.Err(err), log.String("ref", ref.String()))
 				return nil, err
 			}
 		}
+
+		log.Info("Remote Get operation completed successfully", log.String("ref", ref.String()))
 		return desc, nil
 	}
 
 	// No authentication succeeded
+	log.Error("All authentication attempts failed", log.Int("total_attempts", authCount), log.Err(errs), log.String("ref", ref.String()))
 	return nil, errs
 }
 
@@ -126,6 +142,8 @@ func Referrers(ctx context.Context, d name.Digest, option types.RegistryOptions)
 }
 
 func httpTransport(option types.RegistryOptions) (http.RoundTripper, error) {
+	log.Info("Configuring HTTP transport")
+
 	d := &net.Dialer{
 		Timeout: 10 * time.Minute,
 	}
@@ -133,40 +151,66 @@ func httpTransport(option types.RegistryOptions) (http.RoundTripper, error) {
 	tr.DialContext = d.DialContext
 	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: option.Insecure}
 
+	if option.Insecure {
+		log.Info("TLS certificate verification disabled (insecure mode)")
+	} else {
+		log.Info("TLS certificate verification enabled")
+	}
+
 	if len(option.ClientCert) != 0 && len(option.ClientKey) != 0 {
+		log.Info("Configuring client certificate authentication")
 		cert, err := tls.X509KeyPair(option.ClientCert, option.ClientKey)
 		if err != nil {
+			log.Error("Failed to load client certificate", log.Err(err))
 			return nil, err
 		}
 		tr.TLSClientConfig.Certificates = []tls.Certificate{cert}
+		log.Info("Client certificate configured successfully")
 	}
 
 	tripper := transport.NewUserAgent(tr, fmt.Sprintf("trivy/%s", app.Version()))
+	log.Info("HTTP transport configured successfully", log.String("user_agent", fmt.Sprintf("trivy/%s", app.Version())))
 	return tripper, nil
 }
 
 func authOptions(ctx context.Context, ref name.Reference, option types.RegistryOptions) []remote.Option {
+	domain := ref.Context().RegistryStr()
+	log.Info("Configuring authentication options", log.String("domain", domain))
+
 	var opts []remote.Option
-	for _, cred := range option.Credentials {
-		opts = append(opts, remote.WithAuth(&authn.Basic{
-			Username: cred.Username,
-			Password: cred.Password,
-		}))
+
+	// Add basic auth credentials
+	if len(option.Credentials) > 0 {
+		log.Info("Adding basic auth credentials", log.Int("count", len(option.Credentials)), log.String("domain", domain))
+		for _, cred := range option.Credentials {
+			opts = append(opts, remote.WithAuth(&authn.Basic{
+				Username: cred.Username,
+				Password: cred.Password,
+			}))
+		}
+	} else {
+		log.Info("No basic auth credentials provided", log.String("domain", domain))
 	}
 
-	domain := ref.Context().RegistryStr()
+	// Check for domain-specific token
 	token := registry.GetToken(ctx, domain, option)
 	if !lo.IsEmpty(token) {
+		log.Info("Adding domain-specific token authentication", log.String("domain", domain))
 		opts = append(opts, remote.WithAuth(&token))
+	} else {
+		log.Info("No domain-specific token found", log.String("domain", domain))
 	}
 
 	switch {
 	case option.RegistryToken != "":
+		log.Info("Using registry bearer token authentication", log.String("domain", domain))
 		bearer := authn.Bearer{Token: option.RegistryToken}
 		return []remote.Option{remote.WithAuth(&bearer)}
 	default:
 		// Use the keychain anyway at the end
+		log.Info("Adding keychain authentication as fallback", log.String("domain", domain))
 		opts = append(opts, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		log.Info("Authentication options configured", log.Int("total_options", len(opts)), log.String("domain", domain))
 		return opts
 	}
 }
@@ -189,7 +233,7 @@ func resolvePlatform(ref name.Reference, p types.Platform, options []remote.Opti
 	switch d.MediaType {
 	case v1types.OCIManifestSchema1, v1types.DockerManifestSchema2:
 		// We want an index but the registry has an image, not multi-arch. We just ignore "--platform".
-		log.Debug("Ignore `--platform` as the image is not multi-arch")
+		log.Info("Ignore `--platform` as the image is not multi-arch")
 		return types.Platform{}, nil
 	case v1types.OCIImageIndex, v1types.DockerManifestList:
 		// These are expected.
@@ -205,7 +249,7 @@ func resolvePlatform(ref name.Reference, p types.Platform, options []remote.Opti
 		return types.Platform{}, xerrors.Errorf("remote index manifest error: %w", err)
 	}
 	if len(m.Manifests) == 0 {
-		log.Debug("Ignore '--platform' as the image is not multi-arch")
+		log.Info("Ignore '--platform' as the image is not multi-arch")
 		return types.Platform{}, nil
 	}
 	if m.Manifests[0].Platform != nil {
